@@ -63,7 +63,7 @@ void setup_database() {
     sqlite3_close(db);
 }
 
-// Function to find potential matches for a project's tasks
+// find potential matches for tasks
 void find_matches(int project_id) {
     sqlite3* db;
     sqlite3_stmt* stmt;
@@ -73,8 +73,7 @@ void find_matches(int project_id) {
         throw std::runtime_error("Can't open database: " + std::string(sqlite3_errmsg(db)));
     }
 
-    // Get tasks for project
-    sqlite3_prepare_v2(db, "SELECT task_name, required_skill, schedule_from, schedule_to FROM Tasks WHERE project_id = ?;", -1, &stmt, 0);
+    sqlite3_prepare_v2(db, "SELECT task_name, required_skill, schedule_from, schedule_to FROM Tasks WHERE project_id = ? AND status != 'Completed';", -1, &stmt, 0);
     sqlite3_bind_int(stmt, 1, project_id);
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -87,7 +86,6 @@ void find_matches(int project_id) {
         task_result["required_skill"] = required_skill;
         task_result["schedule"] = schedule_from + " to " + schedule_to;
 
-        // Find resources with skill and available during the task's schedule
         sqlite3_stmt* resource_stmt;
         const char* resources_sql = "SELECT R.resource_id, R.resource_name FROM Resources R JOIN Resource_Skills RS ON R.resource_id = RS.resource_id JOIN Resource_Availability RA ON R.resource_id = RA.resource_id WHERE RS.skill = ? AND RA.available_to >= ? AND RA.available_from <= ?;";
         sqlite3_prepare_v2(db, resources_sql, -1, &resource_stmt, 0);
@@ -226,21 +224,33 @@ void complete_task(int task_id) {
         throw std::runtime_error("Can't open database: " + std::string(sqlite3_errmsg(db)));
     }
 
-    const char* delete_sql = "DELETE FROM Assignments WHERE task_id = ?;";
-    if (sqlite3_prepare_v2(db, delete_sql, -1, &stmt, 0) != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare delete statement.");
-    }
+    int resource_id = -1;
+    sqlite3_prepare_v2(db, "SELECT resource_id FROM Assignments WHERE task_id = ?;", -1, &stmt, 0);
     sqlite3_bind_int(stmt, 1, task_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        resource_id = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
 
-    if (sqlite3_step(stmt) == SQLITE_DONE) {
+    if (resource_id != -1) {
+        const char* update_sql = "UPDATE Tasks SET status = 'Completed', completed_by_resource_id = ?, completion_date = ? WHERE task_id = ?;";
+        sqlite3_prepare_v2(db, update_sql, -1, &stmt, 0);
+        sqlite3_bind_int(stmt, 1, resource_id);
+        sqlite3_bind_text(stmt, 2, format_date(std::chrono::system_clock::now()).c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 3, task_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+
+        sqlite3_prepare_v2(db, "DELETE FROM Assignments WHERE task_id = ?;", -1, &stmt, 0);
+        sqlite3_bind_int(stmt, 1, task_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+
         result["success"] = true;
-        result["message"] = "Task marked as complete and resource freed.";
     } else {
         result["success"] = false;
-        result["message"] = "Failed to complete task.";
     }
     
-    sqlite3_finalize(stmt);
     sqlite3_close(db);
     std::cout << result.dump(4) << std::endl;
 }

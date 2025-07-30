@@ -7,13 +7,15 @@ API_URL = "http://localhost:8000"
 st.set_page_config(layout="wide")
 st.title("Intelligent Task Manager")
 
-# --- Data Fetching Functions (remain the same) ---
+# --- Data Fetching Functions ---
 def get_api_data(endpoint):
     try:
         res = requests.get(f"{API_URL}/{endpoint}")
-        return res.json() if res.status_code == 200 else []
+        if res.status_code == 200:
+            return res.json()
     except requests.exceptions.ConnectionError:
         return None
+    return []
 
 projects_list = get_api_data("projects")
 skills_list = get_api_data("skills")
@@ -36,7 +38,7 @@ else:
         st.header("View Potential Resource Matches")
         st.info("Select a project to see all existing tasks and every resource who is qualified and available to work on them.")
         
-        selected_project_name = st.selectbox("Select a Project", options=projects_map.keys())
+        selected_project_name = st.selectbox("Select a Project", options=projects_map.keys(), key="tab1_project_selector")
         
         if selected_project_name:
             project_id = projects_map[selected_project_name]
@@ -53,7 +55,7 @@ else:
                             st.warning("No potential resources found for this task's skill and schedule.")
                         st.markdown("---")
                 else:
-                    st.write("No tasks found for this project.")
+                    st.write("No unassigned tasks found for this project.")
 
     # Tab 2: Allocate a new task
     with tab2:
@@ -61,7 +63,6 @@ else:
         st.info("The system will first try to find a completely free resource. If none are available, it will assign the task to the qualified resource with the lightest workload.")
 
         with st.form("allocation_form"):
-            # New improved project selection
             st.write("**Select an Existing Project OR Enter a New One**")
             existing_project = st.selectbox("Select Existing Project", options=[""] + list(projects_map.keys()))
             new_project_name = st.text_input("Or, Create New Project", placeholder="e.g., Marketing Campaign Q4")
@@ -82,19 +83,14 @@ else:
                     st.warning("Please ensure a project is selected or created, and all task fields are filled.")
                 else:
                     with st.spinner("Running allocation algorithm..."):
-                        task_data = {
-                            "project_name": project_name,
-                            "task_name": task_name,
-                            "skill": required_skill,
-                            "duration_hours": duration_hours
-                        }
+                        task_data = { "project_name": project_name, "task_name": task_name, "skill": required_skill, "duration_hours": duration_hours }
                         response = requests.post(f"{API_URL}/tasks", json=task_data)
                         if response.status_code == 200:
                             result = response.json()
                             if result.get("success"):
-                                st.success(f"✅ {result['message']} Assigned to: **{result['allocated_to']}**")
+                                st.success(f"✅ {result['message']} Assigned to: **{result.get('allocated_to', 'N/A')}**")
                             else:
-                                st.error(f"❌ {result['message']}")
+                                st.error(f"❌ {result.get('message', 'An unknown error occurred.')}")
                         else:
                             st.error(f"An API error occurred: {response.status_code} - {response.text}")
     
@@ -109,12 +105,31 @@ else:
         assignments_data = get_api_data("resource_assignments")
         if assignments_data:
             for resource in assignments_data:
-                # ... (This section's code for checkboxes remains the same)
-                pass
+                st.subheader(f"Resource: {resource['resource_name']}")
+                
+                for task in resource['assigned_tasks']:
+                    task_id = task['task_id']
+                    
+                    col1, col2, col3 = st.columns([1, 4, 2])
+                    with col1:
+                        is_complete = st.checkbox("✔", key=f"complete_{task_id}", help="Mark as complete")
+                    with col2:
+                        st.write(task['task_name'])
+                    with col3:
+                        st.write(task['project_name'])
+
+                    if is_complete:
+                        with st.spinner(f"Completing '{task['task_name']}'..."):
+                            res = requests.delete(f"{API_URL}/tasks/{task_id}")
+                            if res.status_code == 200 and res.json().get("success"):
+                                st.toast(f"Task '{task['task_name']}' completed!", icon="🎉")
+                                st.rerun()
+                            else:
+                                st.error("Failed to complete the task.")
         else:
             st.info("No tasks are currently assigned to any resources.")
-
-    # Tab 4: New tab to show completion history
+            
+    # Tab 4: Completion History
     with tab4:
         st.header("Completed Task History")
         
@@ -125,15 +140,7 @@ else:
             completed_data = get_api_data("completed_tasks")
             if completed_data:
                 df_completed = pd.DataFrame(completed_data)
-                df_completed.rename(
-                    columns={
-                        'project_name': 'Project',
-                        'task_name': 'Task',
-                        'completed_by': 'Completed By',
-                        'completion_date': 'Date Completed'
-                    },
-                    inplace=True
-                )
+                df_completed.rename(columns={'project_name': 'Project', 'task_name': 'Task', 'completed_by': 'Completed By', 'completion_date': 'Date Completed'}, inplace=True)
                 st.dataframe(df_completed, hide_index=True, use_container_width=True)
             else:
                 st.info("No tasks have been completed yet.")

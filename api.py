@@ -10,12 +10,41 @@ import re
 
 MATCHER_EXEC = "./matcher"
 
-def setup_database():
-    """Calls the C++ executable to initialize the database."""
-    logging.info("Checking for database...")
+def db_is_initialized():
+    """
+    Checks if the database is properly initialized by looking for the Projects table.
+    This is more reliable than just checking for the file's existence.
+    """
     if not os.path.exists('resource_matching.db'):
-        logging.info("Database not found. Initializing...")
+        return False
+    try:
+        conn = sqlite3.connect('resource_matching.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='Projects';")
+        if cursor.fetchone() is None:
+            conn.close()
+            return False  # Table not there
+        conn.close()
+        return True  # Table exists, so DB is initialized
+    except sqlite3.Error:
+        return False 
+
+def setup_database():
+    """Initializes the database if it's not already set up properly."""
+    logging.info("Checking database initialization status...")
+    if not db_is_initialized():
+        logging.info("Database not initialized or is empty. Running setup...")
+        # If the file exists but is empty/corrupt, remove it for a clean start
+        if os.path.exists('resource_matching.db'):
+            try:
+                os.remove('resource_matching.db')
+                logging.info("Removed stale database file.")
+            except OSError as e:
+                logging.error(f"Error removing database file: {e}")
+                exit(1)
+        
         try:
+            # mske db with C++ obj
             subprocess.run([MATCHER_EXEC, "--init"], check=True, capture_output=True, text=True)
             logging.info("Database initialized successfully by C++ executable.")
         except FileNotFoundError:
@@ -26,7 +55,7 @@ def setup_database():
             logging.error(f"The C++ executable failed during database setup: {e.stderr}")
             exit(1)
     else:
-        logging.info("Database already exists.")
+        logging.info("Database is already initialized.")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -43,9 +72,11 @@ class ResourceMatcherHandler(http.server.SimpleHTTPRequestHandler):
                 self.get_skills()
             elif parsed_path.path == '/resource_assignments':
                 self.get_resource_assignments()
+            elif parsed_path.path == '/completed_tasks':
+                self.get_completed_tasks()
             elif parsed_path.path == '/match_resources' and 'project_id' in query_params:
                 project_id = int(query_params['project_id'][0])
-                self.get_potential_matches(project_id) # New handler
+                self.get_potential_matches(project_id)
             else:
                 self.send_error(404, "Endpoint not found")
         except Exception as e:
@@ -66,6 +97,37 @@ class ResourceMatcherHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             logging.error(f"An error occurred in do_POST: {e}")
             self.send_error(500, "Internal Server Error")
+        
+    def do_DELETE(self):
+        """Handles DELETE requests for completing tasks."""
+        try:
+            match = re.match(r'/tasks/(\d+)', self.path)
+            if match:
+                task_id = int(match.group(1))
+                self.complete_task(task_id)
+            else:
+                self.send_error(404, "Endpoint not found")
+        except Exception as e:
+            logging.error(f"An error occurred in do_DELETE: {e}")
+            self.send_error(500, "Internal Server Error")
+
+    def get_projects(self):
+        conn = sqlite3.connect('resource_matching.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT project_id, project_name FROM Projects")
+        projects = [{'id': p[0], 'name': p[1]} for p in cursor.fetchall()]
+        conn.close()
+        self._send_json_response(projects)
+        
+    def get_potential_matches(self, project_id):
+        """Calls C++ backend to find all potential matches for a project's tasks."""
+        logging.info(f"Calling C++ matcher for potential matches for project_id: {project_id}")
+        try:
+            result = subprocess.run([MATCHER_EXEC, str(project_id)], capture_output=True, text=True, check=True)
+            self._send_json_response(json.loads(result.stdout))
+        except subprocess.CalledProcessError as e:
+            logging.error(f"C++ matcher returned an error: {e.stderr}")
+            self.send_error(500, "Error in C++ backend processing")
 
     def get_skills(self):
         conn = sqlite3.connect('resource_matching.db')
@@ -92,23 +154,6 @@ class ResourceMatcherHandler(http.server.SimpleHTTPRequestHandler):
         except subprocess.CalledProcessError as e:
             logging.error(f"C++ allocator returned an error: {e.stderr}")
             self.send_error(500, "Error in C++ backend processing")
-        except Exception as e:
-            logging.error(f"Error during allocation: {e}")
-            self.send_error(500, "Internal Server Error")
-
-    def do_DELETE(self):
-        """Handles DELETE requests for completing tasks."""
-        try:
-            # Use regex to find a path like /tasks/123
-            match = re.match(r'/tasks/(\d+)', self.path)
-            if match:
-                task_id = int(match.group(1))
-                self.complete_task(task_id)
-            else:
-                self.send_error(404, "Endpoint not found")
-        except Exception as e:
-            logging.error(f"An error occurred in do_DELETE: {e}")
-            self.send_error(500, "Internal Server Error")
 
     def complete_task(self, task_id):
         """Calls the C++ backend to mark a task as complete."""
@@ -127,13 +172,8 @@ class ResourceMatcherHandler(http.server.SimpleHTTPRequestHandler):
         cursor = conn.cursor()
         query = """
             SELECT
-                R.resource_name,
-                T.task_id, -- Added this
-                T.task_name,
-                P.project_name,
-                T.duration_hours,
-                T.schedule_from,
-                T.schedule_to
+                R.resource_name, T.task_id, T.task_name, P.project_name,
+                T.duration_hours, T.schedule_from, T.schedule_to
             FROM Assignments A
             JOIN Resources R ON A.resource_id = R.resource_id
             JOIN Tasks T ON A.task_id = T.task_id
@@ -150,20 +190,34 @@ class ResourceMatcherHandler(http.server.SimpleHTTPRequestHandler):
             if resource_name not in assignments:
                 assignments[resource_name] = {"resource_name": resource_name, "assigned_tasks": []}
             assignments[resource_name]["assigned_tasks"].append({
-                "task_id": task_id, # Now included in the response
-                "task_name": task_name,
-                "project_name": project_name,
-                "duration_hours": duration,
-                "schedule_from": start,
-                "schedule_to": end
+                "task_id": task_id, "task_name": task_name, "project_name": project_name,
+                "duration_hours": duration, "schedule_from": start, "schedule_to": end
             })
         self._send_json_response(list(assignments.values()))
+
+    def get_completed_tasks(self):
+        """Fetches all tasks marked as 'Completed'."""
+        conn = sqlite3.connect('resource_matching.db')
+        cursor = conn.cursor()
+        query = """
+            SELECT P.project_name, T.task_name, R.resource_name, T.completion_date
+            FROM Tasks T
+            JOIN Projects P ON T.project_id = P.project_id
+            LEFT JOIN Resources R ON T.completed_by_resource_id = R.resource_id
+            WHERE T.status = 'Completed'
+            ORDER BY T.completion_date DESC;
+        """
+        cursor.execute(query)
+        completed = [{"project_name": row[0], "task_name": row[1], "completed_by": row[2] if row[2] else "N/A", "completion_date": row[3]} for row in cursor.fetchall()]
+        conn.close()
+        self._send_json_response(completed)
 
     def _send_json_response(self, data, status=200):
         self.send_response(status)
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(json.dumps(data).encode('utf-8'))
+
 
 if __name__ == "__main__":
     setup_database()
