@@ -132,13 +132,14 @@ Run the API server and the Streamlit frontend in **two separate terminal windows
 
 ### Project Structure
 
+```text
 ├── app.py                  # The Streamlit frontend UI
 ├── api.py                  # The Python backend API (http.server)
 ├── matcher.cpp             # The C++ core logic for allocation and DB interaction
 ├── compile.sh              # A simple script to compile the C++ code
 ├── json.hpp                # The nlohmann JSON library for C++
 └── resource_matching.db    # The SQLite database file (auto-generated)
-
+```
 ### Functionality
 
 The application is divided into four main tabs in the UI:
