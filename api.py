@@ -84,18 +84,45 @@ class ResourceMatcherHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(500, "Internal Server Error")
 
     def do_POST(self):
-        """Handles POST requests for creating new tasks."""
+        """Handles POST requests for creating new tasks or resources."""
         try:
             parsed_path = urlparse(self.path)
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            details = json.loads(post_data)
+
             if parsed_path.path == '/tasks':
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length)
-                task_details = json.loads(post_data)
-                self.allocate_new_task(task_details)
+                self.allocate_new_task(details)
+            elif parsed_path.path == '/resources': # New route
+                self.add_new_resource(details)
             else:
                 self.send_error(404, "Endpoint not found")
         except Exception as e:
             logging.error(f"An error occurred in do_POST: {e}")
+            self.send_error(500, "Internal Server Error")
+
+    def add_new_resource(self, details):
+        """Calls the C++ backend to add a new resource."""
+        name = details.get("name")
+        skills = details.get("skills", [])
+        if not name or not skills:
+            self.send_error(400, "Name and skills are required.")
+            return
+
+        logging.info(f"Calling C++ backend to add resource: {name}")
+        try:
+            # Base arguments
+            args = [MATCHER_EXEC, "--add_resource", name]
+            # Add all skills to the argument list
+            args.extend(skills)
+            
+            result = subprocess.run(args, capture_output=True, text=True, check=True)
+            self._send_json_response(json.loads(result.stdout))
+        except subprocess.CalledProcessError as e:
+            logging.error(f"C++ add resource returned an error: {e.stderr}")
+            self.send_error(500, "Error in C++ backend processing")
+        except Exception as e:
+            logging.error(f"Error during resource addition: {e}")
             self.send_error(500, "Internal Server Error")
         
     def do_DELETE(self):

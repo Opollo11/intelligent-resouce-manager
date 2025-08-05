@@ -66,7 +66,6 @@ else:
             st.write("**Select an Existing Project OR Enter a New One**")
             existing_project = st.selectbox("Select Existing Project", options=[""] + list(projects_map.keys()))
             new_project_name = st.text_input("Or, Create New Project", placeholder="e.g., Marketing Campaign Q4")
-            
             st.markdown("---")
             task_name = st.text_input("New Task Name", placeholder="e.g., Refactor Authentication Module")
             col1, col2 = st.columns(2)
@@ -74,10 +73,9 @@ else:
                 required_skill = st.selectbox("Required Skill", options=skills_list)
             with col2:
                 duration_hours = st.number_input("Hours Required for Task", min_value=1, value=8)
+            submitted_task = st.form_submit_button("Allocate Task")
 
-            submitted = st.form_submit_button("Allocate Task")
-
-            if submitted:
+            if submitted_task:
                 project_name = new_project_name if new_project_name else existing_project
                 if not all([project_name, task_name, required_skill, duration_hours]):
                     st.warning("Please ensure a project is selected or created, and all task fields are filled.")
@@ -93,6 +91,29 @@ else:
                                 st.error(f"❌ {result.get('message', 'An unknown error occurred.')}")
                         else:
                             st.error(f"An API error occurred: {response.status_code} - {response.text}")
+        
+        with st.expander("Add a New Resource to the Team"):
+            with st.form("new_resource_form"):
+                st.subheader("New Resource Details")
+                new_name = st.text_input("Resource Name")
+                new_skills = st.multiselect("Select Skills", options=skills_list)
+                submitted_resource = st.form_submit_button("Add Resource")
+
+                if submitted_resource:
+                    if not new_name or not new_skills:
+                        st.warning("Please provide a name and at least one skill.")
+                    else:
+                        with st.spinner(f"Adding '{new_name}' to the team..."):
+                            resource_data = {"name": new_name, "skills": new_skills}
+                            response = requests.post(f"{API_URL}/resources", json=resource_data)
+                            if response.status_code == 200:
+                                result = response.json()
+                                if result.get("success"):
+                                    st.success(result.get("message"))
+                                else:
+                                    st.error(result.get("message"))
+                            else:
+                                st.error(f"API Error: {response.status_code} - {response.text}")
     
     # Tab 3: View and Complete Assignments
     with tab3:

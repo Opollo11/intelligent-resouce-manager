@@ -255,10 +255,64 @@ void complete_task(int task_id) {
     std::cout << result.dump(4) << std::endl;
 }
 
+void add_resource(const std::string& name, const std::vector<std::string>& skills) {
+    sqlite3* db;
+    sqlite3_stmt* stmt;
+    json result;
+
+    if (sqlite3_open("resource_matching.db", &db)) {
+        throw std::runtime_error("Can't open database: " + std::string(sqlite3_errmsg(db)));
+    }
+
+    // 1 - Insert into Resources table
+    sqlite3_prepare_v2(db, "INSERT INTO Resources (resource_name) VALUES (?);", -1, &stmt, 0);
+    sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_STATIC);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        sqlite3_close(db);
+        throw std::runtime_error("Failed to insert new resource. Name might already exist.");
+    }
+    sqlite3_finalize(stmt);
+    long long resource_id = sqlite3_last_insert_rowid(db);
+
+    // 2 - Insert into Resource_Skills table with skills
+    sqlite3_prepare_v2(db, "INSERT INTO Resource_Skills (resource_id, skill) VALUES (?, ?);", -1, &stmt, 0);
+    for (const auto& skill : skills) {
+        sqlite3_bind_int(stmt, 1, resource_id);
+        sqlite3_bind_text(stmt, 2, skill.c_str(), -1, SQLITE_STATIC);
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            sqlite3_close(db);
+            throw std::runtime_error("Failed to insert skill '" + skill + "' for resource '" + name + "'.");
+        }
+        sqlite3_reset(stmt);
+    }
+    sqlite3_finalize(stmt);
+
+    // 3 - Insert default availability for the new resource
+    auto today = std::chrono::system_clock::now();
+    auto one_year_later = today + std::chrono::hours(365 * 24);
+    std::string start_avail = format_date(today);
+    std::string end_avail = format_date(one_year_later);
+    
+    sqlite3_prepare_v2(db, "INSERT INTO Resource_Availability (resource_id, available_from, available_to) VALUES (?, ?, ?);", -1, &stmt, 0);
+    sqlite3_bind_int(stmt, 1, resource_id);
+    sqlite3_bind_text(stmt, 2, start_avail.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, end_avail.c_str(), -1, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    result["success"] = true;
+    result["message"] = "Resource '" + name + "' added successfully.";
+    
+    sqlite3_close(db);
+    std::cout << result.dump(4) << std::endl;
+}
+
 int main(int argc, char* argv[]) {
     try {
         if (argc < 2) {
-            std::cerr << "Usage: " << argv[0] << " <project_id> | --init | --allocate ... | --complete <task_id>" << std::endl;
+            std::cerr << "Usage: " << argv[0] << " <project_id> | --init | --allocate ... | --complete <task_id> | --add_resource <name> [skills...]" << std::endl;
             return 1;
         }
 
@@ -271,6 +325,17 @@ int main(int argc, char* argv[]) {
         } else if (mode == "--complete") {
             if (argc != 3) return 1;
             complete_task(std::stoi(argv[2]));
+        } else if (mode == "--add_resource") {
+            if (argc < 4) {
+                std::cerr << "Usage for --add_resource: <name> <skill1> [skill2]..." << std::endl;
+                return 1;
+            }
+            std::string name = argv[2];
+            std::vector<std::string> skills;
+            for (int i = 3; i < argc; ++i) {
+                skills.push_back(argv[i]);
+            }
+            add_resource(name, skills);
         } else {
             find_matches(std::stoi(mode));
         }
