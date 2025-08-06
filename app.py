@@ -17,14 +17,18 @@ def get_api_data(endpoint):
         return None
     return []
 
-projects_list = get_api_data("projects")
-skills_list = get_api_data("skills")
-
 # --- Main App ---
-if projects_list is None or skills_list is None:
-    st.error("Connection Error: Make sure the Python API server is running (`python api.py`).")
-else:
+def main():
+    projects_list = get_api_data("projects")
+    skills_list = get_api_data("skills")
+    resources_list = get_api_data("resources")
+
+    if projects_list is None or skills_list is None or resources_list is None:
+        st.error("Connection Error: Make sure the Python API server is running (`python api.py`).")
+        return
+
     projects_map = {p['name']: p['id'] for p in projects_list}
+    resources_map = {r['name']: r['id'] for r in resources_list}
     
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Project Task Matching", 
@@ -59,34 +63,44 @@ else:
 
     # Tab 2: Allocate a new task
     with tab2:
-        st.header("Allocate a New Task by Priority")
-        st.info("The system will first try to find a completely free resource. If none are available, it will assign the task to the qualified resource with the lightest workload.")
-
+        st.header("Allocate a New Task")
+        
         with st.form("allocation_form"):
-            st.write("**Select an Existing Project OR Enter a New One**")
-            existing_project = st.selectbox("Select Existing Project", options=[""] + list(projects_map.keys()))
-            new_project_name = st.text_input("Or, Create New Project", placeholder="e.g., Marketing Campaign Q4")
-            st.markdown("---")
+            st.write("**1. Define the Project & Task**")
+            project_name_input = st.text_input("Project Name", placeholder="Enter existing or new project name")
             task_name = st.text_input("New Task Name", placeholder="e.g., Refactor Authentication Module")
+            
+            st.write("**2. Define Task Requirements**")
             col1, col2 = st.columns(2)
             with col1:
                 required_skill = st.selectbox("Required Skill", options=skills_list)
             with col2:
-                duration_hours = st.number_input("Hours Required for Task", min_value=1, value=8)
+                duration_hours = st.number_input("Hours Required", min_value=1, value=8)
+
+            st.write("**3. Assign a Resource (Optional)**")
+            resource_name = st.selectbox("Assign to Resource", options=["Auto-Assign (Recommended)"] + list(resources_map.keys()))
+
             submitted_task = st.form_submit_button("Allocate Task")
 
             if submitted_task:
-                project_name = new_project_name if new_project_name else existing_project
-                if not all([project_name, task_name, required_skill, duration_hours]):
-                    st.warning("Please ensure a project is selected or created, and all task fields are filled.")
+                if not all([project_name_input, task_name, required_skill, duration_hours]):
+                    st.warning("Please ensure Project Name, Task Name, Skill, and Duration are filled out.")
                 else:
                     with st.spinner("Running allocation algorithm..."):
-                        task_data = { "project_name": project_name, "task_name": task_name, "skill": required_skill, "duration_hours": duration_hours }
+                        task_data = {
+                            "project_name": project_name_input,
+                            "task_name": task_name,
+                            "skill": required_skill,
+                            "duration_hours": duration_hours
+                        }
+                        if resource_name != "Auto-Assign (Recommended)":
+                            task_data["resource_id"] = resources_map[resource_name]
+                        
                         response = requests.post(f"{API_URL}/tasks", json=task_data)
                         if response.status_code == 200:
                             result = response.json()
                             if result.get("success"):
-                                st.success(f"✅ {result['message']} Assigned to: **{result.get('allocated_to', 'N/A')}**")
+                                st.success(f"✅ {result.get('message')} Assigned to: **{result.get('allocated_to', 'N/A')}**")
                             else:
                                 st.error(f"❌ {result.get('message', 'An unknown error occurred.')}")
                         else:
@@ -106,12 +120,9 @@ else:
                         with st.spinner(f"Adding '{new_name}' to the team..."):
                             resource_data = {"name": new_name, "skills": new_skills}
                             response = requests.post(f"{API_URL}/resources", json=resource_data)
-                            if response.status_code == 200:
-                                result = response.json()
-                                if result.get("success"):
-                                    st.success(result.get("message"))
-                                else:
-                                    st.error(result.get("message"))
+                            if response.status_code == 200 and response.json().get("success"):
+                                st.success(response.json().get("message"))
+                                st.info("New resource will be available in dropdowns on next refresh.")
                             else:
                                 st.error(f"API Error: {response.status_code} - {response.text}")
     
@@ -127,18 +138,15 @@ else:
         if assignments_data:
             for resource in assignments_data:
                 st.subheader(f"Resource: {resource['resource_name']}")
-                
                 for task in resource['assigned_tasks']:
                     task_id = task['task_id']
-                    
                     col1, col2, col3 = st.columns([1, 4, 2])
                     with col1:
                         is_complete = st.checkbox("✔", key=f"complete_{task_id}", help="Mark as complete")
                     with col2:
-                        st.write(task['task_name'])
+                        st.write(f"{task['task_name']} ({task['duration_hours']} hrs)")
                     with col3:
                         st.write(task['project_name'])
-
                     if is_complete:
                         with st.spinner(f"Completing '{task['task_name']}'..."):
                             res = requests.delete(f"{API_URL}/tasks/{task_id}")
@@ -165,3 +173,6 @@ else:
                 st.dataframe(df_completed, hide_index=True, use_container_width=True)
             else:
                 st.info("No tasks have been completed yet.")
+
+if __name__ == "__main__":
+    main()
